@@ -15,7 +15,8 @@ const App = () => {
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [memories, setMemories] = useState<MemoryStub[]>([]);
   const [chats, setChats] = useState<ChatThread[]>([]);
-  
+  const [chatError, setChatError] = useState<string>('');
+
   // Settings
   const [geminiKey, setGeminiKey] = useState('');
   const [owaConfig, setOwaConfig] = useState<OpenWebUIConfig>({ baseUrl: '', apiKey: '' });
@@ -88,11 +89,52 @@ const App = () => {
   useEffect(() => Storage.saveMemories(memories), [memories]);
 
   const refreshChats = async () => {
-    const fetchedChats = await openWebUi.getChats();
-    setChats(fetchedChats);
+    setChatError('');
+    if (bridgeUrl) {
+      const base = bridgeUrl.replace(/\/$/, '');
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (bridgeApiKey) {
+        headers['Authorization'] = `Bearer ${bridgeApiKey}`;
+        headers['X-API-Key'] = bridgeApiKey;
+      }
+      try {
+        const res = await fetch(`${base}/continuum/threads?limit=100`, { headers });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setChatError(data?.detail || res.statusText || 'Bridge request failed');
+          setChats([]);
+          return;
+        }
+        const list = data?.threads ?? data?.chats ?? [];
+        const mapped = Array.isArray(list)
+          ? list.map((c: { id?: string; title?: string; name?: string }) => ({
+              id: c.id ?? '',
+              title: c.title || c.name || 'Untitled Chat',
+            }))
+          : [];
+        setChats(mapped);
+        if (mapped.length === 0 && (owaConfig.baseUrl || owaConfig.apiKey)) {
+          setChatError('No chats returned. Use the full Instance URL (e.g. https://your-app.up.railway.app), check API key, then Save Configuration and refresh.');
+        }
+      } catch (e) {
+        setChatError(e instanceof Error ? e.message : 'Network error');
+        setChats([]);
+      }
+      return;
+    }
+    try {
+      const fetchedChats = await openWebUi.getChats();
+      setChats(fetchedChats);
+      if (owaConfig.baseUrl && fetchedChats.length === 0) {
+        setChatError('No chats found. Use the full URL (e.g. https://your-app.up.railway.app), check API key, and ensure CORS allows this app if on a different domain.');
+      }
+    } catch {
+      setChats([]);
+      setChatError('Failed to fetch from OpenWebUI.');
+    }
   };
 
-  const handleSaveSettings = () => {
+  const handleSaveSettings = async () => {
     Storage.saveBridgeUrl(bridgeUrl);
     Storage.saveBridgeApiKey(bridgeApiKey);
     Storage.saveGeminiKey(geminiKey);
@@ -100,18 +142,24 @@ const App = () => {
     openWebUi.updateGeminiKey(geminiKey);
     if (owaConfig.baseUrl) {
       openWebUi.updateOWAConfig(owaConfig);
-      refreshChats();
     }
 
     if (bridgeUrl) {
-      bridgeStorage.saveSettingsToBridge(
-        bridgeUrl,
-        { owaConfig, geminiKey },
-        bridgeApiKey || undefined
-      ).then(() => alert("System Core: Configuration Updated."))
-       .catch(() => alert("Saved locally; bridge save failed."));
+      try {
+        await bridgeStorage.saveSettingsToBridge(
+          bridgeUrl,
+          { owaConfig, geminiKey },
+          bridgeApiKey || undefined
+        );
+        alert("System Core: Configuration Updated.");
+        // Refresh chat list after bridge has the new OWA config
+        await refreshChats();
+      } catch {
+        alert("Saved locally; bridge save failed.");
+      }
     } else {
       alert("System Core: Configuration Updated.");
+      if (owaConfig.baseUrl) refreshChats();
     }
   };
 
@@ -346,36 +394,39 @@ Instruction: Respond to the prompt.
               </div>
 
               <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                        <label className="block text-xs font-mono text-cyber-400 mb-2">INSTANCE URL</label>
-                        <input 
-                          type="text" 
-                          value={owaConfig.baseUrl}
-                          onChange={(e) => setOwaConfig({...owaConfig, baseUrl: e.target.value})}
-                          placeholder="https://my-openwebui.railway.app"
-                          className="w-full bg-cyber-900 border border-cyber-700 rounded p-3 text-white font-mono focus:border-cyber-accent focus:outline-none text-sm"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-xs font-mono text-cyber-400 mb-2">API KEY (BEARER)</label>
-                        <input 
-                          type="password" 
-                          value={owaConfig.apiKey}
-                          onChange={(e) => setOwaConfig({...owaConfig, apiKey: e.target.value})}
-                          placeholder="sk-..."
-                          className="w-full bg-cyber-900 border border-cyber-700 rounded p-3 text-white font-mono focus:border-cyber-accent focus:outline-none text-sm"
-                        />
-                    </div>
+                <div>
+                  <label className="block text-xs font-mono text-cyber-400 mb-2">INSTANCE URL</label>
+                  <input
+                    type="text"
+                    value={owaConfig.baseUrl}
+                    onChange={(e) => setOwaConfig({...owaConfig, baseUrl: e.target.value})}
+                    placeholder="https://my-openwebui.railway.app"
+                    title={owaConfig.baseUrl || 'Full URL (hover when long)'}
+                    className="w-full min-w-0 bg-cyber-900 border border-cyber-700 rounded p-3 text-white font-mono focus:border-cyber-accent focus:outline-none text-sm"
+                  />
+                  <p className="text-[10px] text-cyber-500 mt-1">Hover over the field to see the full URL if it’s clipped.</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-mono text-cyber-400 mb-2">API KEY (BEARER)</label>
+                  <input
+                    type="password"
+                    value={owaConfig.apiKey}
+                    onChange={(e) => setOwaConfig({...owaConfig, apiKey: e.target.value})}
+                    placeholder="sk-..."
+                    className="w-full bg-cyber-900 border border-cyber-700 rounded p-3 text-white font-mono focus:border-cyber-accent focus:outline-none text-sm"
+                  />
                 </div>
 
-                <div className="flex items-center justify-between pt-4">
+                <div className="flex flex-col gap-2 pt-4">
                     <button 
                        onClick={refreshChats}
-                       className="text-cyber-400 hover:text-white text-xs font-mono flex items-center gap-2"
+                       className="text-cyber-400 hover:text-white text-xs font-mono flex items-center gap-2 self-start"
                     >
                         <RefreshCw size={14} /> REFRESH CHAT LIST ({chats.length} FOUND)
                     </button>
+                    {chatError && (
+                      <p className="text-amber-400 text-xs font-mono">{chatError}</p>
+                    )}
                 </div>
               </div>
            </div>
