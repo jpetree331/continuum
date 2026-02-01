@@ -1,0 +1,5 @@
+{
+  "name": "Continuum - Autonomous Agent Control",
+  "description": "A React-based control center for autonomous AI agents. Features a browser-based scheduler, journal logging, and a simulated OpenWebUI connector powered by Gemini.",
+  "requestFramePermissions": []
+}
