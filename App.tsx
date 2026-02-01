@@ -6,6 +6,7 @@ import { Schedule, JournalEntry, View, MemoryStub, ChatThread, OpenWebUIConfig }
 import { Storage } from './services/storage';
 import { openWebUi } from './services/openWebUi';
 import * as journalService from './services/journalService';
+import * as bridgeStorage from './services/bridgeStorage';
 import { Settings, Save, BrainCircuit, RefreshCw, Server, Plus } from 'lucide-react';
 
 const App = () => {
@@ -21,36 +22,68 @@ const App = () => {
   const [bridgeUrl, setBridgeUrl] = useState('');
   const [bridgeApiKey, setBridgeApiKey] = useState('');
   const [nextRunTime, setNextRunTime] = useState<number | null>(null);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
 
-  // Initialization
+  // Initialization: bridge URL/key from localStorage; then schedules/settings from bridge or localStorage
   useEffect(() => {
-    setSchedules(Storage.getSchedules());
+    const savedBridge = Storage.getBridgeUrl();
+    const savedBridgeKey = Storage.getBridgeApiKey();
+    if (savedBridge) setBridgeUrl(savedBridge);
+    if (savedBridgeKey) setBridgeApiKey(savedBridgeKey);
+
     setJournal(Storage.getJournal());
     setMemories(Storage.getMemories());
-    
-    // Load Gemini Key
-    const savedKey = Storage.getGeminiKey();
-    if (savedKey) {
-      setGeminiKey(savedKey);
-      openWebUi.updateGeminiKey(savedKey);
-    }
 
-    // Load OWA Config
-    const savedOwa = Storage.getOWAConfig();
-    if (savedOwa) {
-      setOwaConfig(savedOwa);
-      openWebUi.updateOWAConfig(savedOwa);
-      refreshChats();
+    if (savedBridge) {
+      Promise.all([
+        bridgeStorage.getSchedulesFromBridge(savedBridge, savedBridgeKey || undefined),
+        bridgeStorage.getSettingsFromBridge(savedBridge, savedBridgeKey || undefined),
+      ]).then(([scheds, settings]) => {
+        setSchedules(Array.isArray(scheds) ? scheds : []);
+        if (settings.owaConfig) {
+          setOwaConfig(settings.owaConfig);
+          openWebUi.updateOWAConfig(settings.owaConfig);
+        }
+        if (settings.geminiKey != null) {
+          setGeminiKey(settings.geminiKey);
+          openWebUi.updateGeminiKey(settings.geminiKey);
+        }
+        setInitialLoadDone(true);
+        refreshChats();
+      }).catch(() => {
+        setSchedules(Storage.getSchedules());
+        const savedKey = Storage.getGeminiKey();
+        if (savedKey) setGeminiKey(savedKey);
+        const savedOwa = Storage.getOWAConfig();
+        if (savedOwa) setOwaConfig(savedOwa);
+        setInitialLoadDone(true);
+      });
+    } else {
+      setSchedules(Storage.getSchedules());
+      const savedKey = Storage.getGeminiKey();
+      if (savedKey) {
+        setGeminiKey(savedKey);
+        openWebUi.updateGeminiKey(savedKey);
+      }
+      const savedOwa = Storage.getOWAConfig();
+      if (savedOwa) {
+        setOwaConfig(savedOwa);
+        openWebUi.updateOWAConfig(savedOwa);
+        refreshChats();
+      }
+      setInitialLoadDone(true);
     }
-    // Load Bridge URL and API key (GAM-Memvid server)
-    const savedBridge = Storage.getBridgeUrl();
-    if (savedBridge) setBridgeUrl(savedBridge);
-    const savedBridgeKey = Storage.getBridgeApiKey();
-    if (savedBridgeKey) setBridgeApiKey(savedBridgeKey);
   }, []);
 
-  // Persistence side effects
-  useEffect(() => Storage.saveSchedules(schedules), [schedules]);
+  // Persistence: after initial load, when bridge is set save schedules to bridge; else localStorage
+  useEffect(() => {
+    if (!initialLoadDone) return;
+    if (bridgeUrl) {
+      bridgeStorage.saveSchedulesToBridge(bridgeUrl, schedules, bridgeApiKey || undefined).catch(() => {});
+    } else {
+      Storage.saveSchedules(schedules);
+    }
+  }, [schedules, bridgeUrl, bridgeApiKey, initialLoadDone]);
   useEffect(() => Storage.saveJournal(journal), [journal]);
   useEffect(() => Storage.saveMemories(memories), [memories]);
 
@@ -60,18 +93,26 @@ const App = () => {
   };
 
   const handleSaveSettings = () => {
+    Storage.saveBridgeUrl(bridgeUrl);
+    Storage.saveBridgeApiKey(bridgeApiKey);
     Storage.saveGeminiKey(geminiKey);
+    Storage.saveOWAConfig(owaConfig);
     openWebUi.updateGeminiKey(geminiKey);
-
     if (owaConfig.baseUrl) {
-      Storage.saveOWAConfig(owaConfig);
       openWebUi.updateOWAConfig(owaConfig);
       refreshChats();
     }
-    Storage.saveBridgeUrl(bridgeUrl);
-    Storage.saveBridgeApiKey(bridgeApiKey);
 
-    alert("System Core: Configuration Updated.");
+    if (bridgeUrl) {
+      bridgeStorage.saveSettingsToBridge(
+        bridgeUrl,
+        { owaConfig, geminiKey },
+        bridgeApiKey || undefined
+      ).then(() => alert("System Core: Configuration Updated."))
+       .catch(() => alert("Saved locally; bridge save failed."));
+    } else {
+      alert("System Core: Configuration Updated.");
+    }
   };
 
   // -------------------------
