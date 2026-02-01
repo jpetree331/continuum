@@ -1,0 +1,5 @@
+# Railway config: serve built app on $PORT (not Vite dev server)
+# https://docs.railway.app/guides/config-as-code
+
+[deploy]
+startCommand = "npm run start"
